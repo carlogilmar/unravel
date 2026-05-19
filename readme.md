@@ -24,6 +24,40 @@ Unravel is a **terminal application (TUI)** written in **Go**, distributed as a 
 - Single static binary, cross-platform (macOS, Linux, Windows).
 - Installable via `brew install unravel`, `go install`, or a release tarball from GitHub, this for the future not for now.
 
+## Local development
+
+Run all commands from the repo root.
+
+**Run without installing**
+
+```bash
+go run ./cmd/unravel               # target current directory
+go run ./cmd/unravel /path/to/repo # target another git repo
+```
+
+**Install / upgrade to `~/bin`** (one command does both — `~/bin` must be on your `PATH`)
+
+```bash
+go build -o ~/bin/unravel ./cmd/unravel
+```
+
+After this, run `unravel` from anywhere. Re-running the same command rebuilds and replaces the binary — that *is* the upgrade.
+
+**Verify**
+
+```bash
+which unravel   # should print ~/bin/unravel
+unravel
+```
+
+**Test, then install**
+
+```bash
+go test ./... && go build -o ~/bin/unravel ./cmd/unravel
+```
+
+> Note: `go install ./cmd/unravel` places the binary in `$GOBIN` (or `$GOPATH/bin`), which may not be on your `PATH`. Prefer the `go build -o ~/bin/unravel` form above to land directly in a `PATH` directory.
+
 **Why a terminal app instead of a desktop app**
 
 The product thesis (see [REVIEW_CODE.md](./REVIEW_CODE.md)) is to *protect germane cognitive load*. A TUI's keyboard-driven, low-chrome environment is a better fit than a windowed app: the developer is already in "read and type" mode, not "click and skim" mode. It also ships as one static binary on every platform and lives next to the tools developers already use (`git`, `nvim`, `tmux`).

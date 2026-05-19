@@ -42,6 +42,14 @@ func (m Model) unmarkHunk(file, hunkID string) tea.Cmd {
 	}
 }
 
+func (m Model) updateTitle(title string) tea.Cmd {
+	store := m.Store
+	sessID := m.Sess.ID
+	return func() tea.Msg {
+		return TitleUpdatedMsg{Title: title, Err: store.UpdateHypothesis(sessID, title)}
+	}
+}
+
 func (m Model) closeSession() tea.Cmd {
 	store := m.Store
 	sessID := m.Sess.ID

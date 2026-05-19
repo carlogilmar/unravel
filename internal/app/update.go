@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -29,22 +30,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Files = msg.Files
-		m.FileCursor = 0
-		m.Screen = ScreenFileList
+		if m.FileCursor >= len(m.Files) {
+			m.FileCursor = 0
+		}
+		m.DiffCursor = 0
+		if m.Screen != ScreenDiff && m.Screen != ScreenSummary && m.Screen != ScreenTitleEdit {
+			m.Screen = ScreenFileList
+		}
 		return m, nil
 
 	case HunkMarkedMsg:
 		if msg.Err == nil {
-			m.Marked[m.markedKey(msg.File, msg.HunkID)] = true
+			key := m.markedKey(msg.File, msg.HunkID)
+			m.Marked[key] = true
+			m.Notes[key] = msg.Why
 		}
-		m.Screen = ScreenDiff
+		m.InlineNote = false
 		m.NoteInput.SetValue("")
 		m.NoteInput.Blur()
 		return m, nil
 
 	case HunkUnmarkedMsg:
 		if msg.Err == nil {
-			delete(m.Marked, m.markedKey(msg.File, msg.HunkID))
+			key := m.markedKey(msg.File, msg.HunkID)
+			delete(m.Marked, key)
+			delete(m.Notes, key)
+		}
+		return m, nil
+
+	case TitleUpdatedMsg:
+		if msg.Err == nil && m.Sess != nil {
+			m.Sess.Hypothesis = msg.Title
 		}
 		return m, nil
 
@@ -69,55 +85,41 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.Screen {
-	case ScreenHypothesis:
-		return m.keyHypothesis(msg)
 	case ScreenFileList:
 		return m.keyFileList(msg)
 	case ScreenDiff:
 		return m.keyDiff(msg)
-	case ScreenNotePrompt:
-		return m.keyNote(msg)
+	case ScreenTitleEdit:
+		return m.keyTitleEdit(msg)
 	case ScreenSummary:
 		return m.keySummary(msg)
+	case ScreenConfirmClose:
+		return m.keyConfirmClose(msg)
 	case ScreenFatal:
 		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m Model) keyHypothesis(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyEnter {
-		text := strings.TrimSpace(m.HypothesisInput.Value())
-		if text == "" {
-			return m, nil
-		}
-		return m, m.startSession(text)
-	}
-	var cmd tea.Cmd
-	m.HypothesisInput, cmd = m.HypothesisInput.Update(msg)
-	return m, cmd
-}
-
 func (m Model) keyFileList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q":
-		if m.allMarked() {
-			m.Screen = ScreenSummary
-			return m, nil
-		}
 		return m, tea.Quit
-	case ":":
-		if m.allMarked() {
-			m.Screen = ScreenSummary
-		}
+	case "s":
+		m.Prev = ScreenFileList
+		m.Screen = ScreenSummary
 		return m, nil
+	case "t":
+		return m.openTitleEdit(ScreenFileList), textinput.Blink
 	case "j", "down":
 		if m.FileCursor < len(m.Files)-1 {
 			m.FileCursor++
+			m.DiffCursor = 0
 		}
 	case "k", "up":
 		if m.FileCursor > 0 {
 			m.FileCursor--
+			m.DiffCursor = 0
 		}
 	case "enter", "l", "right":
 		if len(m.Files) > 0 {
@@ -129,6 +131,10 @@ func (m Model) keyFileList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyDiff(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.InlineNote {
+		return m.keyInlineNote(msg)
+	}
+
 	switch msg.String() {
 	case "esc", "h", "left":
 		m.Screen = ScreenFileList
@@ -142,9 +148,36 @@ func (m Model) keyDiff(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.DiffCursor > 0 {
 			m.DiffCursor--
 		}
+	case " ", "enter":
+		f := m.currentFile()
+		if f != nil && m.DiffCursor < len(f.Hunks) {
+			key := m.markedKey(f.Path, f.Hunks[m.DiffCursor].ID)
+			m.Expanded[key] = !m.Expanded[key]
+		}
+	case "d":
+		m.ShowFullDiff = !m.ShowFullDiff
 	case "f":
 		m.Focus = !m.Focus
+	case "s":
+		m.Prev = ScreenDiff
+		m.Screen = ScreenSummary
+	case "t":
+		return m.openTitleEdit(ScreenDiff), textinput.Blink
 	case "m":
+		f := m.currentFile()
+		if f == nil || m.DiffCursor >= len(f.Hunks) {
+			return m, nil
+		}
+		h := f.Hunks[m.DiffCursor]
+		key := m.markedKey(f.Path, h.ID)
+		m.NoteTarget = noteTarget{File: f.Path, HunkID: h.ID}
+		m.NoteInput.SetValue(m.Notes[key])
+		m.NoteInput.CursorEnd()
+		m.NoteInput.Focus()
+		m.InlineNote = true
+		m.Expanded[key] = true
+		return m, textinput.Blink
+	case "u":
 		f := m.currentFile()
 		if f == nil || m.DiffCursor >= len(f.Hunks) {
 			return m, nil
@@ -153,21 +186,14 @@ func (m Model) keyDiff(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.Marked[m.markedKey(f.Path, h.ID)] {
 			return m, m.unmarkHunk(f.Path, h.ID)
 		}
-		m.NoteTarget = noteTarget{File: f.Path, HunkID: h.ID}
-		m.NoteInput.SetValue("")
-		m.NoteInput.Focus()
-		m.Screen = ScreenNotePrompt
+		return m, nil
 	case "q":
-		if m.allMarked() {
-			m.Screen = ScreenSummary
-			return m, nil
-		}
 		m.Screen = ScreenFileList
 	}
 	return m, nil
 }
 
-func (m Model) keyNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) keyInlineNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(m.NoteInput.Value())
@@ -176,7 +202,8 @@ func (m Model) keyNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.markHunk(m.NoteTarget.File, m.NoteTarget.HunkID, text)
 	case tea.KeyEsc:
-		m.Screen = ScreenDiff
+		m.InlineNote = false
+		m.NoteInput.SetValue("")
 		m.NoteInput.Blur()
 		return m, nil
 	}
@@ -185,12 +212,66 @@ func (m Model) keyNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) openTitleEdit(prev Screen) Model {
+	m.Prev = prev
+	current := defaultTitle
+	if m.Sess != nil && m.Sess.Hypothesis != "" {
+		current = m.Sess.Hypothesis
+	}
+	m.TitleInput.SetValue(current)
+	m.TitleInput.CursorEnd()
+	m.TitleInput.Focus()
+	m.Screen = ScreenTitleEdit
+	return m
+}
+
+func (m Model) keyTitleEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		text := strings.TrimSpace(m.TitleInput.Value())
+		if text == "" {
+			return m, nil
+		}
+		m.TitleInput.Blur()
+		m.Screen = m.Prev
+		if m.Sess != nil {
+			m.Sess.Hypothesis = text
+			return m, m.updateTitle(text)
+		}
+		return m, nil
+	case tea.KeyEsc:
+		m.TitleInput.Blur()
+		m.Screen = m.Prev
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.TitleInput, cmd = m.TitleInput.Update(msg)
+	return m, cmd
+}
+
 func (m Model) keySummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		if m.allMarked() {
+			m.Screen = ScreenConfirmClose
+		}
+		return m, nil
+	case "n", "esc", "q":
+		m.Screen = m.Prev
+		if m.Screen == ScreenSummary {
+			m.Screen = ScreenFileList
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) keyConfirmClose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
 		return m, m.closeSession()
 	case "n", "esc", "q":
-		m.Screen = ScreenFileList
+		m.Screen = ScreenSummary
 		return m, nil
 	}
 	return m, nil

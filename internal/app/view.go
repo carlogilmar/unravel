@@ -11,36 +11,54 @@ import (
 )
 
 func (m Model) View() string {
+	if m.Screen == ScreenFatal {
+		return m.viewFatal()
+	}
+	if m.Sess == nil {
+		return m.viewLoading()
+	}
 	switch m.Screen {
-	case ScreenHypothesis:
-		return m.viewHypothesis()
 	case ScreenFileList:
 		return m.viewFileList()
 	case ScreenDiff:
 		return m.viewDiff()
-	case ScreenNotePrompt:
-		return m.viewNotePrompt()
+	case ScreenTitleEdit:
+		return m.viewTitleEdit()
 	case ScreenSummary:
 		return m.viewSummary()
-	case ScreenFatal:
-		return m.viewFatal()
+	case ScreenConfirmClose:
+		return m.viewConfirmClose()
 	}
 	return ""
 }
 
-func (m Model) viewHypothesis() string {
-	title := view.Header.Render("Unravel — start a review session")
-	prompt := "Before reading any code, write one sentence:\n"
-	hint := view.Help.Render("Enter to start  ·  Ctrl+C to quit")
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		title,
+func (m Model) viewConfirmClose() string {
+	hdr := m.headerBar()
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(view.ColorWarn).
+		Padding(1, 2).
+		Width(70)
+	lines := []string{
+		view.Header.Render("Close this session?"),
 		"",
-		view.Hypothesis.Render(prompt),
-		m.HypothesisInput.View(),
+		fmt.Sprintf("Title:      %s", m.Sess.Hypothesis),
+		fmt.Sprintf("Files:      %d", len(m.Files)),
+		fmt.Sprintf("Hunks:      %d / %d understood", m.markedCount(), m.totalHunks()),
 		"",
-		hint,
-	)
-	return lipgloss.NewStyle().Padding(1, 2).Render(body)
+		"Heads up — every note you wrote lives only inside this session.",
+		"Once you close it, the current notes cannot be recovered from",
+		"within Unravel. There is no undo.",
+		"",
+		view.Help.Render("y / Enter — yes, close   ·   n / Esc — no, go back"),
+	}
+	body := box.Render(strings.Join(lines, "\n"))
+	return joinFull(m.Height, hdr, lipgloss.NewStyle().Padding(2, 2).Render(body), m.statusBar())
+}
+
+func (m Model) viewLoading() string {
+	body := lipgloss.NewStyle().Padding(2, 2).Render(view.Hypothesis.Render("Loading session…"))
+	return body
 }
 
 func (m Model) viewFileList() string {
@@ -59,18 +77,18 @@ func (m Model) viewDiff() string {
 	return joinFull(m.Height, hdr, body, footer)
 }
 
-func (m Model) viewNotePrompt() string {
+func (m Model) viewTitleEdit() string {
 	hdr := m.headerBar()
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(view.ColorAccent).
 		Padding(1, 2).
-		Width(80)
-	prompt := "Modification test — answer in one sentence:\n"
+		Width(70)
+	prompt := "Update session title:"
 	help := view.Help.Render("Enter to save  ·  Esc to cancel")
 	body := box.Render(lipgloss.JoinVertical(lipgloss.Left,
 		view.Hypothesis.Render(prompt),
-		m.NoteInput.View(),
+		m.TitleInput.View(),
 		"",
 		help,
 	))
@@ -79,19 +97,45 @@ func (m Model) viewNotePrompt() string {
 
 func (m Model) viewSummary() string {
 	hdr := m.headerBar()
-	lines := []string{
-		view.Header.Render("Close session?"),
-		"",
-		fmt.Sprintf("Hypothesis:  %s", m.Sess.Hypothesis),
-		fmt.Sprintf("Files:       %d", len(m.Files)),
-		fmt.Sprintf("Hunks read:  %d / %d", m.markedCount(), m.totalHunks()),
-		"",
-		"What happens after this is outside Unravel's scope.",
-		"Commit, push, PR, walk away — your call.",
-		"",
-		view.Help.Render("y / Enter — close   ·   n / Esc — back to review"),
+	var lines []string
+	lines = append(lines, view.Header.Render("Session summary"))
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("Title:      %s", m.Sess.Hypothesis))
+	lines = append(lines, fmt.Sprintf("Files:      %d", len(m.Files)))
+	lines = append(lines, fmt.Sprintf("Progress:   %d / %d hunks understood", m.markedCount(), m.totalHunks()))
+	lines = append(lines, "")
+
+	if len(m.Files) == 0 {
+		lines = append(lines, view.Help.Render("No files in the working tree."))
 	}
-	body := lipgloss.NewStyle().Padding(2, 4).Render(strings.Join(lines, "\n"))
+
+	for _, f := range m.Files {
+		status := statusStyle(f.Status).Render(string(f.Status))
+		lines = append(lines, fmt.Sprintf("%s  %s", status, view.Header.Render(f.Path)))
+		for i, h := range f.Hunks {
+			key := m.markedKey(f.Path, h.ID)
+			marker := view.UnmarkedTag.Render("◯")
+			if m.Marked[key] {
+				marker = view.MarkedTag.Render("✓")
+			}
+			hunkLine := fmt.Sprintf("    %s  Hunk %d/%d  %s", marker, i+1, len(f.Hunks),
+				view.DiffHunkHdr.Render(h.Header))
+			lines = append(lines, hunkLine)
+			if note := m.Notes[key]; note != "" {
+				lines = append(lines, view.Hypothesis.Render("        — "+note))
+			}
+		}
+		lines = append(lines, "")
+	}
+
+	if m.allMarked() {
+		lines = append(lines, view.Help.Render("y / Enter — close session   ·   n / Esc — back"))
+	} else {
+		remaining := m.totalHunks() - m.markedCount()
+		lines = append(lines, view.Help.Render(fmt.Sprintf("%d hunk(s) still need a why-note before you can close   ·   n / Esc — back", remaining)))
+	}
+
+	body := lipgloss.NewStyle().Padding(1, 2).Render(strings.Join(lines, "\n"))
 	return joinFull(m.Height, hdr, body, m.statusBar())
 }
 
@@ -105,7 +149,7 @@ func (m Model) headerBar() string {
 	title := "Unravel"
 	hyp := ""
 	if m.Sess != nil {
-		hyp = view.Hypothesis.Render("hypothesis: " + m.Sess.Hypothesis)
+		hyp = view.Hypothesis.Render("title: " + m.Sess.Hypothesis)
 	}
 	return view.Header.Render(title) + " " + hyp
 }
@@ -120,6 +164,12 @@ func (m Model) statusBar() string {
 		if m.Focus {
 			mode = "focus"
 		}
+		if m.InlineNote {
+			mode = "note"
+		}
+	}
+	if m.ShowFullDiff && m.Screen == ScreenDiff {
+		mode += "·full"
 	}
 	help := m.helpForScreen()
 	left := fmt.Sprintf(" [%s]  %s ", mode, progress)
@@ -129,16 +179,21 @@ func (m Model) statusBar() string {
 func (m Model) helpForScreen() string {
 	switch m.Screen {
 	case ScreenFileList:
-		if m.allMarked() {
-			return "j/k move · enter open · q close session"
-		}
-		return "j/k move · enter open · q quit"
+		return "j/k move · enter open · t title · s summary · q quit"
 	case ScreenDiff:
-		return "j/k hunk · f focus · m mark · esc back"
-	case ScreenNotePrompt:
+		if m.InlineNote {
+			return "enter save · esc cancel"
+		}
+		return "j/k hunk · space expand · d full/added · m note · u unmark · f focus · s summary · t title · esc back"
+	case ScreenTitleEdit:
 		return "enter save · esc cancel"
 	case ScreenSummary:
-		return "y close · n back"
+		if m.allMarked() {
+			return "y close · n back"
+		}
+		return "n back"
+	case ScreenConfirmClose:
+		return "y confirm close · n back"
 	}
 	return ""
 }
@@ -206,12 +261,18 @@ func (m Model) renderDiff(width int) string {
 	b.WriteString(view.Header.Render(f.Path) + "\n\n")
 
 	for i, h := range f.Hunks {
-		marked := m.Marked[m.markedKey(f.Path, h.ID)]
+		key := m.markedKey(f.Path, h.ID)
+		marked := m.Marked[key]
+		expanded := m.Expanded[key]
+
 		tag := view.UnmarkedTag.Render("◯")
 		if marked {
 			tag = view.MarkedTag.Render("✓")
 		}
 		header := fmt.Sprintf("%s  Hunk %d/%d  %s", tag, i+1, len(f.Hunks), h.Header)
+		if note := m.Notes[key]; note != "" {
+			header += "  " + view.Hypothesis.Render("— "+note)
+		}
 		if i == m.DiffCursor {
 			header = view.DiffCurrent.Render(view.DiffHunkHdr.Render(header))
 		} else {
@@ -219,19 +280,30 @@ func (m Model) renderDiff(width int) string {
 		}
 		b.WriteString(header + "\n")
 
-		if m.Focus && i != m.DiffCursor {
-			b.WriteString(view.DiffDimmed.Render("  ··· dimmed ···") + "\n\n")
+		if m.InlineNote && i == m.DiffCursor {
+			b.WriteString("    " + view.Hypothesis.Render("why → ") + m.NoteInput.View() + "\n")
+		}
+
+		focusHide := m.Focus && i != m.DiffCursor
+		if !expanded || focusHide {
+			if focusHide {
+				b.WriteString("  " + view.DiffDimmed.Render("··· dimmed ···") + "\n")
+			}
+			b.WriteString("\n")
 			continue
 		}
-		b.WriteString(m.renderHunk(h, m.Focus && i == m.DiffCursor, width))
+		b.WriteString(m.renderHunk(h, width, m.ShowFullDiff))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func (m Model) renderHunk(h git.Hunk, focus bool, width int) string {
+func (m Model) renderHunk(h git.Hunk, width int, showFull bool) string {
 	var b strings.Builder
 	for _, l := range h.Lines {
+		if !showFull && l.Kind != git.LineAdd {
+			continue
+		}
 		var prefix string
 		var style lipgloss.Style
 		switch l.Kind {
@@ -245,11 +317,9 @@ func (m Model) renderHunk(h git.Hunk, focus bool, width int) string {
 			prefix = "  "
 			style = view.DiffContext
 		}
-		num := ""
+		num := "     "
 		if l.NewNum > 0 {
 			num = fmt.Sprintf("%4d ", l.NewNum)
-		} else {
-			num = "     "
 		}
 		text := style.Render(prefix + l.Content)
 		line := view.DiffDimmed.Render(num) + text
@@ -257,10 +327,6 @@ func (m Model) renderHunk(h git.Hunk, focus bool, width int) string {
 			line = lipgloss.NewStyle().MaxWidth(width).Render(line)
 		}
 		b.WriteString(line + "\n")
-	}
-	if focus {
-		// reserved: future per-line cursor inside focus mode
-		_ = focus
 	}
 	return b.String()
 }

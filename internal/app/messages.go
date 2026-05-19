@@ -32,4 +32,9 @@ type SessionClosedMsg struct {
 	Err error
 }
 
+type TitleUpdatedMsg struct {
+	Title string
+	Err   error
+}
+
 type FatalErrMsg struct{ Err error }

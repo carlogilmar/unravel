@@ -11,13 +11,15 @@ import (
 type Screen int
 
 const (
-	ScreenHypothesis Screen = iota
-	ScreenFileList
+	ScreenFileList Screen = iota
 	ScreenDiff
-	ScreenNotePrompt
+	ScreenTitleEdit
 	ScreenSummary
+	ScreenConfirmClose
 	ScreenFatal
 )
+
+const defaultTitle = "Check code"
 
 type Model struct {
 	ProjectDir string
@@ -29,17 +31,20 @@ type Model struct {
 	Prev     Screen
 	FatalErr error
 
-	HypothesisInput textinput.Model
-	NoteInput       textinput.Model
+	TitleInput textinput.Model
+	NoteInput  textinput.Model
 
-	Files       []git.FileChange
-	FileCursor  int
-	Marked      map[string]bool
+	Files      []git.FileChange
+	FileCursor int
+	Marked     map[string]bool
+	Notes      map[string]string
+	Expanded   map[string]bool
 
-	DiffCursor int
-	Focus      bool
-
-	NoteTarget noteTarget
+	DiffCursor   int
+	Focus        bool
+	ShowFullDiff bool
+	InlineNote   bool
+	NoteTarget   noteTarget
 
 	Sess   *session.Session
 	Width  int
@@ -52,30 +57,33 @@ type noteTarget struct {
 }
 
 func New(projectDir string, repo *git.Repo, store *session.Store, headSHA string) Model {
-	hi := textinput.New()
-	hi.Placeholder = "What do I think this change does?"
-	hi.CharLimit = 240
-	hi.Width = 80
-	hi.Focus()
+	ti := textinput.New()
+	ti.Placeholder = "Session title"
+	ti.CharLimit = 120
+	ti.Width = 60
 
 	ni := textinput.New()
-	ni.Placeholder = "Could I change this safely? Why is it the way it is?"
+	ni.Placeholder = "Why is this the way it is? Could I change it safely?"
 	ni.CharLimit = 240
-	ni.Width = 80
+	ni.Width = 70
 
 	return Model{
-		ProjectDir:      projectDir,
-		Repo:            repo,
-		Store:           store,
-		HeadSHA:         headSHA,
-		Screen:          ScreenHypothesis,
-		HypothesisInput: hi,
-		NoteInput:       ni,
-		Marked:          map[string]bool{},
+		ProjectDir: projectDir,
+		Repo:       repo,
+		Store:      store,
+		HeadSHA:    headSHA,
+		Screen:     ScreenFileList,
+		TitleInput: ti,
+		NoteInput:  ni,
+		Marked:     map[string]bool{},
+		Notes:      map[string]string{},
+		Expanded:   map[string]bool{},
 	}
 }
 
-func (m Model) Init() tea.Cmd { return textinput.Blink }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink, m.startSession(defaultTitle))
+}
 
 func (m Model) markedKey(file, hunkID string) string { return file + "\x00" + hunkID }
 

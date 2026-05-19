@@ -91,6 +91,11 @@ func (s *Store) CloseSession(id int64) error {
 	return nil
 }
 
+func (s *Store) UpdateHypothesis(sessionID int64, hypothesis string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET hypothesis = ? WHERE id = ?`, hypothesis, sessionID)
+	return err
+}
+
 func (s *Store) MarkHunk(sessionID int64, file, hunkID, whyNote string) error {
 	if whyNote == "" {
 		return errors.New("why note required")
